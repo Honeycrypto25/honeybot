@@ -1,0 +1,18 @@
+/Users/sergiuapostol/Library/Python/3.9/lib/python/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+2025-10-30 19:38:02,938 [INFO] 🚀 HONEYBOT Multi-Bot + Smart Cycle Recovery started...
+
+2025-10-30 19:38:03,120 [INFO] HTTP Request: GET https://ywwzaarmbrdgtoayvepn.supabase.co/rest/v1/settings?select=%2A&active=eq.True "HTTP/2 200 OK"
+2025-10-30 19:38:03,121 [INFO] ⚙️ Started bot for HONEY-USDT: amount=500.0, discount=5.0%, cycle=20.0h
+2025-10-30 19:38:03,212 [INFO] HTTP Request: GET https://ywwzaarmbrdgtoayvepn.supabase.co/rest/v1/orders?select=created_at&symbol=eq.HONEY-USDT&side=eq.SELL&status=eq.executed&order=created_at.desc&limit=1 "HTTP/2 200 OK"
+2025-10-30 19:38:03,216 [INFO] HTTP Request: GET https://ywwzaarmbrdgtoayvepn.supabase.co/rest/v1/settings?select=%2A&active=eq.True "HTTP/2 200 OK"
+2025-10-30 19:38:03,216 [INFO] [HONEY-USDT] ⏳ Ultimul SELL a fost acum 0.25h → Aștept 19.75h până la următorul ciclu...
+2025-10-30 19:38:03,217 [INFO] 
+🔍 Pornesc verificarea la 2025-10-30T19:38:03.217393+00:00...
+
+2025-10-30 19:38:03,290 [INFO] HTTP Request: GET https://ywwzaarmbrdgtoayvepn.supabase.co/rest/v1/orders?select=%2A&symbol=eq.HONEY-USDT&status=in.%28pending%2Copen%29&order=last_updated.asc&limit=5 "HTTP/2 200 OK"
+2025-10-30 19:38:03,683 [INFO] HTTP Request: PATCH https://ywwzaarmbrdgtoayvepn.supabase.co/rest/v1/orders?order_id=eq.6903bb0e46243100075ee966 "HTTP/2 200 OK"
+2025-10-30 19:38:03,684 [INFO] 🟢 Updated 6903bb0e46243100075ee966: pending (None)
+2025-10-30 19:38:03,684 [INFO] [HONEY-USDT] ⏳ Ordin BUY încă în așteptare: 6903bb0e46243100075ee966
+2025-10-30 19:38:03,685 [INFO] ✅ Verificarea s-a terminat. Următoarea în 1 oră.
+
