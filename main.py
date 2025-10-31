@@ -5,10 +5,10 @@ import os
 import logging
 from datetime import datetime, timezone
 from exchange import init_client, market_sell, check_order_executed, place_limit_buy
-from supabase_client import get_all_active_bots, save_order, supabase, update_execution_time
+from supabase_client import get_all_active_bots, save_order, supabase, update_execution_time_and_profit
 
 # =====================================================
-# 🪵 Setup logging (scrie în logs/honeybot.log)
+# 🪵 Setup logging
 # =====================================================
 os.makedirs("logs", exist_ok=True)
 logging.basicConfig(
@@ -25,26 +25,30 @@ logging.getLogger("").addHandler(console)
 logging.info("🚀 HONEYBOT Multi-Bot + Smart Cycle Recovery started...\n")
 
 # =====================================================
-# 🧠 Order Checker (rulează în thread separat)
+# 🧠 Order Checker (thread separat)
 # =====================================================
-def update_order_status(order_id, new_status, avg_price=None, cycle_id=None):
-    """Actualizează statusul unui ordin în Supabase."""
+def update_order_status(order_id, new_status, avg_price=None, filled_size=None, cycle_id=None):
+    """Actualizează statusul ordinului și, dacă e complet executat, calculează profitul."""
     data = {
         "status": new_status,
-        "last_updated": datetime.now(timezone.utc).isoformat()
+        "last_updated": datetime.now(timezone.utc).isoformat(),
     }
+
     if avg_price is not None:
         data["price"] = avg_price
+    if filled_size is not None:
+        data["filled_size"] = filled_size
 
     supabase.table("orders").update(data).eq("order_id", order_id).execute()
     logging.info(f"🟢 Updated {order_id}: {new_status} ({avg_price})")
 
-    # dacă e BUY executat complet, actualizează durata ciclului
+    # dacă este un BUY executat → calculează profitul
     if new_status == "executed" and cycle_id:
-        update_execution_time(cycle_id)
+        update_execution_time_and_profit(cycle_id)
+
 
 def check_old_orders(client, symbol):
-    """Verifică ultimele 5 ordine neînchise."""
+    """Verifică ultimele 5 ordine neexecutate (pending/open)."""
     result = supabase.table("orders") \
         .select("*") \
         .eq("symbol", symbol) \
@@ -67,14 +71,15 @@ def check_old_orders(client, symbol):
 
         done, avg_price = check_order_executed(client, order_id)
         if done:
-            update_order_status(order_id, "executed", avg_price, cycle_id)
+            update_order_status(order_id, "executed", avg_price, None, cycle_id)
             logging.info(f"[{symbol}] ✅ Ordin {side} executat: {order_id}")
         else:
             update_order_status(order_id, "pending")
             logging.info(f"[{symbol}] ⏳ Ordin {side} încă în așteptare: {order_id}")
 
+
 def run_order_checker():
-    """Rulează verificarea la fiecare oră."""
+    """Rulează verificarea automată a ordinelor o dată pe oră."""
     while True:
         try:
             bots = get_all_active_bots()
@@ -87,11 +92,7 @@ def run_order_checker():
 
             for bot in bots:
                 symbol = bot["symbol"]
-                api_key = bot["api_key"]
-                api_secret = bot["api_secret"]
-                api_passphrase = bot["api_passphrase"]
-
-                client = init_client(api_key, api_secret, api_passphrase)
+                client = init_client(bot["api_key"], bot["api_secret"], bot["api_passphrase"])
                 check_old_orders(client, symbol)
 
             logging.info("✅ Verificarea s-a terminat. Următoarea în 1 oră.\n")
@@ -102,7 +103,7 @@ def run_order_checker():
             time.sleep(60)
 
 # =====================================================
-# 🤖 Bot principal (SELL → CHECK → BUY)
+# 🤖 Bot principal SELL → BUY
 # =====================================================
 def run_bot(settings):
     symbol = settings["symbol"]
@@ -116,7 +117,7 @@ def run_bot(settings):
 
     logging.info(f"⚙️ Started bot for {symbol}: amount={amount}, discount={buy_discount*100}%, cycle={cycle_delay/3600}h")
 
-    # 🧠 1️⃣ Verifică timpul scurs de la ultimul SELL executat
+    # 🧠 Verifică timpul de la ultimul SELL executat
     try:
         last_sell = supabase.table("orders") \
             .select("created_at") \
@@ -144,10 +145,10 @@ def run_bot(settings):
     except Exception as e:
         logging.warning(f"[{symbol}] ⚠️ Eroare la verificarea ultimului SELL: {e}")
 
-    # 🔁 Bucla principală de ciclu
+    # 🔁 Buclă principală a botului
     while True:
         try:
-            # ⚠️ Evită dublarea SELL dacă există unul pending
+            # ⚠️ Evită dublarea SELL dacă există un pending
             pending = supabase.table("orders") \
                 .select("*") \
                 .eq("symbol", symbol) \
@@ -162,33 +163,50 @@ def run_bot(settings):
             # 1️⃣ Inițializează clientul KuCoin
             client = init_client(api_key, api_secret, api_passphrase)
 
-            # 2️⃣ MARKET SELL → generăm cycle_id unic
+            # 2️⃣ MARKET SELL → inițiere ciclu nou
             cycle_id = str(uuid.uuid4())
             sell_id = market_sell(client, symbol, amount)
             save_order(symbol, "SELL", 0, "pending", {"order_id": sell_id, "cycle_id": cycle_id})
 
-            # 3️⃣ Verificăm execuția SELL
+            # 3️⃣ Așteaptă execuția SELL
             executed = False
             avg_price = 0
             while not executed:
                 time.sleep(check_delay)
                 executed, avg_price = check_order_executed(client, sell_id)
                 logging.info(f"[{symbol}] ⏳ Checking SELL... executed={executed}, avg={avg_price}")
-
                 if executed:
                     supabase.table("orders").update({
                         "status": "executed",
                         "price": avg_price,
+                        "filled_size": amount,
                         "last_updated": datetime.now(timezone.utc).isoformat()
                     }).eq("order_id", sell_id).execute()
-                    logging.info(f"[{symbol}] ✅ SELL order updated → executed @ {avg_price}")
+                    logging.info(f"[{symbol}] ✅ SELL executat @ {avg_price}")
 
-            # 4️⃣ BUY limit la -discount%
+            # 4️⃣ BUY LIMIT imediat după SELL
             if avg_price > 0:
                 buy_price = round(avg_price * (1 - buy_discount), 4)
                 buy_id = place_limit_buy(client, symbol, amount, buy_price)
                 save_order(symbol, "BUY", buy_price, "open", {"order_id": buy_id, "cycle_id": cycle_id})
                 logging.info(f"[{symbol}] 🟢 BUY limit placed la {buy_price}")
+
+                # verifică execuția BUY după delay
+                time.sleep(check_delay)
+                executed_buy, buy_avg = check_order_executed(client, buy_id)
+                if executed_buy:
+                    supabase.table("orders").update({
+                        "status": "executed",
+                        "price": buy_avg if buy_avg > 0 else buy_price,
+                        "filled_size": amount,
+                        "last_updated": datetime.now(timezone.utc).isoformat()
+                    }).eq("order_id", buy_id).execute()
+
+                    # 🧾 actualizează profitul + durata ciclului
+                    update_execution_time_and_profit(cycle_id)
+                    logging.info(f"[{symbol}] ✅ BUY executat instant @ {buy_avg or buy_price}")
+                else:
+                    logging.info(f"[{symbol}] ⏳ BUY încă deschis — va fi verificat ulterior.")
 
             logging.info(f"[{symbol}] ✅ Cycle complete. Waiting {cycle_delay/3600}h...\n")
             time.sleep(cycle_delay)
@@ -198,7 +216,7 @@ def run_bot(settings):
             time.sleep(30)
 
 # =====================================================
-# 🚀 Start toți boții + Order Checker
+# 🚀 Pornire toți boții + order checker
 # =====================================================
 def start_all_bots():
     bots = get_all_active_bots()
@@ -206,19 +224,16 @@ def start_all_bots():
         logging.warning("⚠️ No active bots found in Supabase.")
         return
 
-    # pornește fiecare bot într-un thread propriu
+    # Rulează fiecare bot în thread separat
     for settings in bots:
-        thread = threading.Thread(target=run_bot, args=(settings,))
-        thread.daemon = True
-        thread.start()
+        threading.Thread(target=run_bot, args=(settings,), daemon=True).start()
 
-    # pornește Order Checker într-un thread separat
-    checker_thread = threading.Thread(target=run_order_checker)
-    checker_thread.daemon = True
-    checker_thread.start()
+    # Thread separat pentru verificarea ordinelor
+    threading.Thread(target=run_order_checker, daemon=True).start()
 
     while True:
         time.sleep(60)
+
 
 if __name__ == "__main__":
     start_all_bots()

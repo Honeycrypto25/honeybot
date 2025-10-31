@@ -1,6 +1,6 @@
 import os
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from dotenv import load_dotenv
 from supabase import create_client
 
@@ -22,7 +22,7 @@ supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 print(f"✅ Connected to Supabase project: {SUPABASE_URL.split('//')[1].split('.')[0]}")
 
 # =====================================================
-# 📘 Functions
+# 📘 FUNCTIONS
 # =====================================================
 
 def get_all_active_bots():
@@ -36,27 +36,27 @@ def get_all_active_bots():
 def save_order(symbol, side, price, status, extra=None):
     """
     Salvează un ordin în tabelul 'orders'.
-    Dacă e SELL -> generează un cycle_id nou.
-    Dacă e BUY -> folosește cycle_id-ul din extra (dacă există).
+    - SELL → generează cycle_id nou
+    - BUY → folosește cycle_id primit în `extra`
     """
     data = {
         "symbol": symbol,
         "side": side,
-        "price": price,
+        "price": float(price),
         "status": status,
-        "last_updated": datetime.utcnow().isoformat()
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "last_updated": datetime.now(timezone.utc).isoformat(),
     }
 
-    # Dacă e SELL -> generează cycle_id nou
-    if side == "SELL":
+    # SELL → creează un nou ciclu
+    if side.upper() == "SELL":
         data["cycle_id"] = str(uuid.uuid4())
-        data["created_at"] = datetime.utcnow().isoformat()
 
-    # Dacă e BUY -> folosește același cycle_id din extra
+    # BUY → folosește cycle_id existent
     if extra and "cycle_id" in extra:
         data["cycle_id"] = extra["cycle_id"]
 
-    # Include restul informațiilor suplimentare (order_id, etc.)
+    # Alte câmpuri suplimentare (ex: order_id, filled_size etc.)
     if extra:
         data.update(extra)
 
@@ -64,29 +64,63 @@ def save_order(symbol, side, price, status, extra=None):
     print(f"[{symbol}] 💾 Saved {side} ({status}) | price={price} | cycle_id={data.get('cycle_id')}")
 
 
-def update_execution_time(cycle_id):
+def update_execution_time_and_profit(cycle_id):
     """
-    Calculează și actualizează durata (execution_time)
-    între SELL și BUY pentru un anumit cycle_id.
+    Calculează durata și profitul efectiv în USDT pentru fiecare ciclu complet (SELL + BUY).
     """
     try:
-        result = supabase.table("orders").select("created_at, side").eq("cycle_id", cycle_id).execute()
+        result = supabase.table("orders") \
+            .select("side, price, created_at, last_updated, symbol, filled_size") \
+            .eq("cycle_id", cycle_id) \
+            .execute()
+
         orders = result.data or []
         if len(orders) < 2:
-            return  # nu avem pereche completă SELL + BUY
+            print(f"⚠️ Skipping execution_time: incomplete cycle {cycle_id}")
+            return
 
-        sell_time = None
-        buy_time = None
+        symbol = None
+        sell_price = buy_price = sell_time = buy_time = filled_size = None
 
         for o in orders:
-            if o["side"] == "SELL":
+            symbol = o["symbol"]
+            if o["side"].upper() == "SELL":
+                sell_price = float(o["price"])
                 sell_time = datetime.fromisoformat(o["created_at"].replace("Z", "+00:00"))
-            elif o["side"] == "BUY":
-                buy_time = datetime.fromisoformat(o["created_at"].replace("Z", "+00:00"))
+                filled_size = float(o.get("filled_size") or 0)
+            elif o["side"].upper() == "BUY":
+                buy_price = float(o["price"])
+                src = o.get("last_updated") or o.get("created_at")
+                buy_time = datetime.fromisoformat(str(src).replace("Z", "+00:00"))
 
+        if not (sell_price and buy_price):
+            print(f"⚠️ Missing price data for {cycle_id}")
+            return
+
+        # Profit procentual
+        profit_percent = round(((sell_price - buy_price) / buy_price) * 100, 2)
+
+        # Profit efectiv în USDT
+        profit_usdt = round((sell_price - buy_price) * filled_size, 6)
+
+        # Durata execuției
+        execution_time = None
         if sell_time and buy_time:
-            duration = buy_time - sell_time
-            supabase.table("orders").update({"execution_time": str(duration)}).eq("cycle_id", cycle_id).execute()
-            print(f"🕒 Updated execution_time for {cycle_id}: {duration}")
+            execution_time = buy_time - sell_time
+
+        # 🧾 Salvare / actualizare în profit_per_cycle
+        supabase.table("profit_per_cycle").upsert({
+            "cycle_id": cycle_id,
+            "symbol": symbol,
+            "sell_price": sell_price,
+            "buy_price": buy_price,
+            "profit_percent": profit_percent,
+            "profit_usdt": profit_usdt,
+            "execution_time": str(execution_time) if execution_time else None,
+            "last_updated": datetime.now(timezone.utc).isoformat(),
+        }).execute()
+
+        print(f"💰 [{symbol}] Profit updated: {profit_percent}% → {profit_usdt} USDT")
+
     except Exception as e:
-        print("❌ Error updating execution_time:", e)
+        print(f"❌ Error updating profit for {cycle_id}: {e}")
