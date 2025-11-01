@@ -49,13 +49,15 @@ def update_order_status(order_id, new_status, avg_price=None, filled_size=None, 
 
 def check_old_orders(client, symbol):
     """Verifică ultimele 5 ordine neexecutate (pending/open)."""
-    result = supabase.table("orders") \
-        .select("*") \
-        .eq("symbol", symbol) \
-        .in_("status", ["pending", "open"]) \
-        .order("last_updated", desc=False) \
-        .limit(5) \
+    result = (
+        supabase.table("orders")
+        .select("*")
+        .eq("symbol", symbol)
+        .in_("status", ["pending", "open"])
+        .order("last_updated", desc=False)
+        .limit(5)
         .execute()
+    )
 
     orders = result.data or []
     if not orders:
@@ -119,14 +121,16 @@ def run_bot(settings):
 
     # 🧠 Verifică timpul de la ultimul SELL executat
     try:
-        last_sell = supabase.table("orders") \
-            .select("created_at") \
-            .eq("symbol", symbol) \
-            .eq("side", "SELL") \
-            .eq("status", "executed") \
-            .order("created_at", desc=True) \
-            .limit(1) \
+        last_sell = (
+            supabase.table("orders")
+            .select("created_at")
+            .eq("symbol", symbol)
+            .eq("side", "SELL")
+            .eq("status", "executed")
+            .order("created_at", desc=True)
+            .limit(1)
             .execute()
+        )
 
         if last_sell.data and last_sell.data[0].get("created_at"):
             last_time = datetime.fromisoformat(last_sell.data[0]["created_at"].replace("Z", "+00:00"))
@@ -136,7 +140,9 @@ def run_bot(settings):
 
             if remaining > 0:
                 hrs = round(remaining / 3600, 2)
-                logging.info(f"[{symbol}] ⏳ Ultimul SELL a fost acum {round(elapsed/3600,2)}h → Aștept {hrs}h până la următorul ciclu...")
+                logging.info(
+                    f"[{symbol}] ⏳ Ultimul SELL a fost acum {round(elapsed/3600,2)}h → Aștept {hrs}h până la următorul ciclu..."
+                )
                 time.sleep(remaining)
             else:
                 logging.info(f"[{symbol}] ✅ Timpul de așteptare a expirat. Încep un nou ciclu.")
@@ -148,17 +154,33 @@ def run_bot(settings):
     # 🔁 Buclă principală a botului
     while True:
         try:
-            # ⚠️ Evită dublarea SELL dacă există un pending
-            pending = supabase.table("orders") \
-                .select("*") \
-                .eq("symbol", symbol) \
-                .eq("status", "pending") \
+            # ⚠️ Evită dublarea SELL dacă există un pending recent (<30min)
+            pending = (
+                supabase.table("orders")
+                .select("created_at")
+                .eq("symbol", symbol)
+                .eq("side", "SELL")
+                .eq("status", "pending")
+                .order("created_at", desc=True)
+                .limit(1)
                 .execute()
+            )
 
             if pending.data and len(pending.data) > 0:
-                logging.info(f"[{symbol}] ⚠️ Există deja un SELL pending. Aștept execuția...")
-                time.sleep(60)
-                continue
+                last_pending = pending.data[0]
+                created_at = datetime.fromisoformat(last_pending["created_at"].replace("Z", "+00:00"))
+                elapsed_minutes = (datetime.now(timezone.utc) - created_at).total_seconds() / 60
+
+                if elapsed_minutes < 30:
+                    logging.info(
+                        f"[{symbol}] ⚠️ Există un SELL pending de {round(elapsed_minutes,1)} minute → aștept execuția."
+                    )
+                    time.sleep(60)
+                    continue
+                else:
+                    logging.warning(
+                        f"[{symbol}] ⏳ Ordinul pending este mai vechi de 30 min → continui ciclul nou (considerat expirat)."
+                    )
 
             # 1️⃣ Inițializează clientul KuCoin
             client = init_client(api_key, api_secret, api_passphrase)
@@ -176,12 +198,14 @@ def run_bot(settings):
                 executed, avg_price = check_order_executed(client, sell_id)
                 logging.info(f"[{symbol}] ⏳ Checking SELL... executed={executed}, avg={avg_price}")
                 if executed:
-                    supabase.table("orders").update({
-                        "status": "executed",
-                        "price": avg_price,
-                        "filled_size": amount,
-                        "last_updated": datetime.now(timezone.utc).isoformat()
-                    }).eq("order_id", sell_id).execute()
+                    supabase.table("orders").update(
+                        {
+                            "status": "executed",
+                            "price": avg_price,
+                            "filled_size": amount,
+                            "last_updated": datetime.now(timezone.utc).isoformat(),
+                        }
+                    ).eq("order_id", sell_id).execute()
                     logging.info(f"[{symbol}] ✅ SELL executat @ {avg_price}")
 
             # 4️⃣ BUY LIMIT imediat după SELL
@@ -195,12 +219,14 @@ def run_bot(settings):
                 time.sleep(check_delay)
                 executed_buy, buy_avg = check_order_executed(client, buy_id)
                 if executed_buy:
-                    supabase.table("orders").update({
-                        "status": "executed",
-                        "price": buy_avg if buy_avg > 0 else buy_price,
-                        "filled_size": amount,
-                        "last_updated": datetime.now(timezone.utc).isoformat()
-                    }).eq("order_id", buy_id).execute()
+                    supabase.table("orders").update(
+                        {
+                            "status": "executed",
+                            "price": buy_avg if buy_avg > 0 else buy_price,
+                            "filled_size": amount,
+                            "last_updated": datetime.now(timezone.utc).isoformat(),
+                        }
+                    ).eq("order_id", buy_id).execute()
 
                     # 🧾 actualizează profitul + durata ciclului
                     update_execution_time_and_profit(cycle_id)
