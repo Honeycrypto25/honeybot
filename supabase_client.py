@@ -33,6 +33,27 @@ def get_all_active_bots():
     return bots
 
 
+# =====================================================
+# ♻️ Reload dinamic la fiecare ciclu
+# =====================================================
+def get_latest_settings():
+    """
+    Returnează toate setările active din 'settings'.
+    Se folosește pentru reîncărcare dinamică la fiecare ciclu.
+    """
+    try:
+        data = supabase.table("settings").select("*").eq("active", True).execute()
+        bots = data.data or []
+        print(f"♻️ Reloaded {len(bots)} active setting(s) from Supabase.")
+        return bots
+    except Exception as e:
+        print(f"❌ Error reading latest settings: {e}")
+        return []
+
+
+# =====================================================
+# 💾 Salvare ordine
+# =====================================================
 def save_order(symbol, side, price, status, extra=None):
     """
     Salvează un ordin în tabelul 'orders'.
@@ -48,15 +69,14 @@ def save_order(symbol, side, price, status, extra=None):
         "last_updated": datetime.now(timezone.utc).isoformat(),
     }
 
-    # SELL → creează un nou ciclu
+    # SELL → ciclu nou
     if side.upper() == "SELL":
         data["cycle_id"] = str(uuid.uuid4())
 
-    # BUY → folosește cycle_id existent
+    # BUY → continuă ciclul existent
     if extra and "cycle_id" in extra:
         data["cycle_id"] = extra["cycle_id"]
 
-    # Alte câmpuri suplimentare (ex: order_id, filled_size etc.)
     if extra:
         data.update(extra)
 
@@ -64,15 +84,23 @@ def save_order(symbol, side, price, status, extra=None):
     print(f"[{symbol}] 💾 Saved {side} ({status}) | price={price} | cycle_id={data.get('cycle_id')}")
 
 
+# =====================================================
+# 💰 Profit per cycle (pentru ambele strategii)
+# =====================================================
 def update_execution_time_and_profit(cycle_id):
     """
-    Calculează durata și profitul efectiv în USDT pentru fiecare ciclu complet (SELL + BUY).
+    Calculează durata și profitul efectiv pentru fiecare ciclu complet.
+    Suportă ambele strategii:
+    - SELL → BUY (profit în USDT)
+    - BUY → SELL (profit în monedă de bază)
     """
     try:
-        result = supabase.table("orders") \
-            .select("side, price, created_at, last_updated, symbol, filled_size") \
-            .eq("cycle_id", cycle_id) \
+        result = (
+            supabase.table("orders")
+            .select("side, price, created_at, last_updated, symbol, filled_size")
+            .eq("cycle_id", cycle_id)
             .execute()
+        )
 
         orders = result.data or []
         if len(orders) < 2:
@@ -84,43 +112,60 @@ def update_execution_time_and_profit(cycle_id):
 
         for o in orders:
             symbol = o["symbol"]
-            if o["side"].upper() == "SELL":
-                sell_price = float(o["price"])
-                sell_time = datetime.fromisoformat(o["created_at"].replace("Z", "+00:00"))
-                filled_size = float(o.get("filled_size") or 0)
-            elif o["side"].upper() == "BUY":
-                buy_price = float(o["price"])
-                src = o.get("last_updated") or o.get("created_at")
-                buy_time = datetime.fromisoformat(str(src).replace("Z", "+00:00"))
+            side = o["side"].upper()
+            price = float(o["price"])
+            filled = float(o.get("filled_size") or 0)
+            ts = datetime.fromisoformat((o.get("last_updated") or o.get("created_at")).replace("Z", "+00:00"))
+
+            if side == "SELL":
+                sell_price = price
+                sell_time = ts
+                filled_size = filled
+            elif side == "BUY":
+                buy_price = price
+                buy_time = ts
+                filled_size = filled
 
         if not (sell_price and buy_price):
             print(f"⚠️ Missing price data for {cycle_id}")
             return
 
-        # Profit procentual
-        profit_percent = round(((sell_price - buy_price) / buy_price) * 100, 2)
+        # Detectăm strategia (ordine cronologică)
+        strategy = "SELL_BUY" if sell_time < buy_time else "BUY_SELL"
 
-        # Profit efectiv în USDT
-        profit_usdt = round((sell_price - buy_price) * filled_size, 6)
+        # Inițializăm valorile profitului
+        profit_percent = profit_usdt = profit_coin = None
+
+        # SELL → BUY  → profit în USDT
+        if strategy == "SELL_BUY":
+            profit_percent = round(((sell_price - buy_price) / buy_price) * 100, 2)
+            profit_usdt = round((sell_price - buy_price) * filled_size, 6)
+
+        # BUY → SELL  → profit în coin
+        else:
+            profit_percent = round(((sell_price - buy_price) / sell_price) * 100, 2)
+            profit_coin = round((sell_price - buy_price) / sell_price * filled_size, 6)
 
         # Durata execuției
         execution_time = None
         if sell_time and buy_time:
-            execution_time = buy_time - sell_time
+            execution_time = abs(buy_time - sell_time)
 
         # 🧾 Salvare / actualizare în profit_per_cycle
         supabase.table("profit_per_cycle").upsert({
             "cycle_id": cycle_id,
             "symbol": symbol,
+            "strategy": strategy,
             "sell_price": sell_price,
             "buy_price": buy_price,
             "profit_percent": profit_percent,
             "profit_usdt": profit_usdt,
+            "profit_coin": profit_coin,
             "execution_time": str(execution_time) if execution_time else None,
             "last_updated": datetime.now(timezone.utc).isoformat(),
         }).execute()
 
-        print(f"💰 [{symbol}] Profit updated: {profit_percent}% → {profit_usdt} USDT")
+        print(f"💰 [{symbol}][{strategy}] Profit updated: {profit_percent}% → USDT={profit_usdt} | COIN={profit_coin}")
 
     except Exception as e:
         print(f"❌ Error updating profit for {cycle_id}: {e}")
