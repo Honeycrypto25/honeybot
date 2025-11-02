@@ -34,7 +34,7 @@ formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
 console.setFormatter(formatter)
 logging.getLogger("").addHandler(console)
 
-logging.info("🚀 HONEYBOT Multi-Bot + Smart Cycle Recovery (dual strategy + live reload + staggered start + unique match) started...\n")
+logging.info("🚀 HONEYBOT Multi-Bot + Smart Cycle Recovery (dual strategy + live reload + staggered start + normalized discount) started...\n")
 
 # =====================================================
 # 🧠 Order Checker
@@ -44,7 +44,6 @@ def update_order_status(order_id, new_status, avg_price=None, filled_size=None, 
         "status": new_status,
         "last_updated": datetime.now(timezone.utc).isoformat(),
     }
-
     if avg_price is not None:
         data["price"] = avg_price
     if filled_size is not None:
@@ -67,7 +66,6 @@ def check_old_orders(client, symbol, strategy_label):
         .limit(5)
         .execute()
     )
-
     orders = result.data or []
     if not orders:
         logging.info(f"[{symbol}][{strategy_label}] ✅ Nicio comandă de verificat.")
@@ -99,7 +97,6 @@ def run_order_checker():
                 continue
 
             logging.info(f"\n🔍 Pornesc verificarea la {datetime.now(timezone.utc).isoformat()}...\n")
-
             for bot in bots:
                 symbol = bot["symbol"]
                 strategy_label = bot.get("strategy", "SELL_BUY").upper()
@@ -108,13 +105,12 @@ def run_order_checker():
 
             logging.info("✅ Verificarea s-a terminat. Următoarea în 1 oră.\n")
             time.sleep(3600)
-
         except Exception as e:
             logging.error(f"❌ Eroare în order_checker: {e}")
             time.sleep(60)
 
 # =====================================================
-# 🤖 Bot principal (cu identificare unică symbol+strategy)
+# 🤖 Bot principal cu discount normalizat
 # =====================================================
 def run_bot(settings):
     symbol = settings["symbol"]
@@ -128,16 +124,22 @@ def run_bot(settings):
     strategy = settings.get("strategy", "sell_buy")
     strategy_label = strategy.upper()
 
-    logging.info(f"[{symbol}][{strategy_label}] ⚙️ Started bot | amount={amount}, discount={buy_discount}, cycle={cycle_delay/3600}h")
+    # normalizează discount (dacă e introdus 5 în loc de 0.05)
+    if buy_discount > 1:
+        buy_discount = buy_discount / 100
+
+    logging.info(f"[{symbol}][{strategy_label}] ⚙️ Started bot | amount={amount}, discount={buy_discount*100:.2f}%, cycle={cycle_delay/3600}h")
 
     while True:
         try:
-            # ♻️ Reîncarcă toate setările active și potrivește symbol + strategy
+            # ♻️ reîncarcă setările active + potrivire după symbol + strategy
             bots = get_latest_settings()
             for bot in bots:
                 if bot["symbol"] == symbol and bot.get("strategy", "").lower() == strategy.lower():
                     settings = bot
                     buy_discount = float(bot["buy_discount"])
+                    if buy_discount > 1:
+                        buy_discount = buy_discount / 100
                     cycle_delay = int(bot["cycle_delay"])
                     strategy = bot.get("strategy", strategy)
                     strategy_label = strategy.upper()
@@ -148,7 +150,7 @@ def run_bot(settings):
             logging.info(f"[{symbol}][{strategy_label}] 🧠 Running strategy...")
 
             # =====================================================
-            # SELL → BUY STRATEGY
+            # SELL → BUY
             # =====================================================
             if strategy == "sell_buy":
                 sell_id = market_sell(client, symbol, amount, strategy_label)
@@ -163,8 +165,7 @@ def run_bot(settings):
                     "strategy": strategy_label
                 })
 
-                executed = False
-                avg_price = 0
+                executed, avg_price = False, 0
                 while not executed:
                     time.sleep(check_delay)
                     executed, avg_price = check_order_executed(client, sell_id)
@@ -175,23 +176,22 @@ def run_bot(settings):
                         ).eq("order_id", sell_id).execute()
                         logging.info(f"[{symbol}][{strategy_label}] ✅ SELL executat @ {avg_price}")
 
-                if avg_price > 0:
-                    buy_price = round(avg_price * (1 - buy_discount), 4)
-                    buy_id = place_limit_buy(client, symbol, amount, buy_price, strategy_label)
-                    if not buy_id:
-                        logging.warning(f"[{symbol}][{strategy_label}] ⚠️ Limit BUY failed — skipping cycle.")
-                        time.sleep(cycle_delay)
-                        continue
+                buy_price = round(avg_price * (1 - buy_discount), 6)
+                buy_id = place_limit_buy(client, symbol, amount, buy_price, strategy_label)
+                if not buy_id:
+                    logging.warning(f"[{symbol}][{strategy_label}] ⚠️ Limit BUY failed — skipping cycle.")
+                    time.sleep(cycle_delay)
+                    continue
 
-                    save_order(symbol, "BUY", buy_price, "open", {
-                        "order_id": buy_id,
-                        "cycle_id": cycle_id,
-                        "strategy": strategy_label
-                    })
-                    logging.info(f"[{symbol}][{strategy_label}] 🟢 BUY limit placed @ {buy_price}")
+                save_order(symbol, "BUY", buy_price, "open", {
+                    "order_id": buy_id,
+                    "cycle_id": cycle_id,
+                    "strategy": strategy_label
+                })
+                logging.info(f"[{symbol}][{strategy_label}] 🟢 BUY limit placed @ {buy_price} (−{buy_discount*100:.2f}%)")
 
             # =====================================================
-            # BUY → SELL STRATEGY
+            # BUY → SELL
             # =====================================================
             elif strategy == "buy_sell":
                 buy_id = market_buy(client, symbol, amount, strategy_label)
@@ -206,8 +206,7 @@ def run_bot(settings):
                     "strategy": strategy_label
                 })
 
-                executed = False
-                avg_price = 0
+                executed, avg_price = False, 0
                 while not executed:
                     time.sleep(check_delay)
                     executed, avg_price = check_order_executed(client, buy_id)
@@ -218,24 +217,20 @@ def run_bot(settings):
                         ).eq("order_id", buy_id).execute()
                         logging.info(f"[{symbol}][{strategy_label}] ✅ BUY executat @ {avg_price}")
 
-                if avg_price > 0:
-                    sell_price = round(avg_price * (1 + buy_discount), 4)
-                    sell_id = place_limit_sell(client, symbol, amount, sell_price, strategy_label)
-                    if not sell_id:
-                        logging.warning(f"[{symbol}][{strategy_label}] ⚠️ Limit SELL failed — skipping cycle.")
-                        time.sleep(cycle_delay)
-                        continue
+                sell_price = round(avg_price * (1 + buy_discount), 6)
+                sell_id = place_limit_sell(client, symbol, amount, sell_price, strategy_label)
+                if not sell_id:
+                    logging.warning(f"[{symbol}][{strategy_label}] ⚠️ Limit SELL failed — skipping cycle.")
+                    time.sleep(cycle_delay)
+                    continue
 
-                    save_order(symbol, "SELL", sell_price, "open", {
-                        "order_id": sell_id,
-                        "cycle_id": cycle_id,
-                        "strategy": strategy_label
-                    })
-                    logging.info(f"[{symbol}][{strategy_label}] 🔴 SELL limit placed @ {sell_price}")
+                save_order(symbol, "SELL", sell_price, "open", {
+                    "order_id": sell_id,
+                    "cycle_id": cycle_id,
+                    "strategy": strategy_label
+                })
+                logging.info(f"[{symbol}][{strategy_label}] 🔴 SELL limit placed @ {sell_price} (+{buy_discount*100:.2f}%)")
 
-            # =====================================================
-            # NEXT CYCLE
-            # =====================================================
             logging.info(f"[{symbol}][{strategy_label}] ⏳ Aștept următorul ciclu ({cycle_delay/3600}h)...\n")
             time.sleep(cycle_delay)
 
