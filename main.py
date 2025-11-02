@@ -34,7 +34,15 @@ formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
 console.setFormatter(formatter)
 logging.getLogger("").addHandler(console)
 
-logging.info("🚀 HONEYBOT Multi-Bot + Smart Cycle Recovery (dual strategy + live reload + staggered start + normalized discount) started...\n")
+logging.info("🚀 HONEYBOT Multi-Bot + Smart Cycle Recovery (dual strategy + live reload + staggered start + tick-size safe) started...\n")
+
+# =====================================================
+# 🧮 Tick Size Adjust
+# =====================================================
+def adjust_price_to_tick(price, tick_size=0.00001):
+    """Ajustează prețul la tick size-ul permis de exchange (KuCoin)."""
+    adjusted = round(round(price / tick_size) * tick_size, 5)
+    return adjusted
 
 # =====================================================
 # 🧠 Order Checker
@@ -110,7 +118,7 @@ def run_order_checker():
             time.sleep(60)
 
 # =====================================================
-# 🤖 Bot principal cu discount normalizat
+# 🤖 Bot principal cu discount normalizat + tick-size
 # =====================================================
 def run_bot(settings):
     symbol = settings["symbol"]
@@ -176,7 +184,7 @@ def run_bot(settings):
                         ).eq("order_id", sell_id).execute()
                         logging.info(f"[{symbol}][{strategy_label}] ✅ SELL executat @ {avg_price}")
 
-                buy_price = round(avg_price * (1 - buy_discount), 6)
+                buy_price = adjust_price_to_tick(avg_price * (1 - buy_discount))
                 buy_id = place_limit_buy(client, symbol, amount, buy_price, strategy_label)
                 if not buy_id:
                     logging.warning(f"[{symbol}][{strategy_label}] ⚠️ Limit BUY failed — skipping cycle.")
@@ -217,7 +225,7 @@ def run_bot(settings):
                         ).eq("order_id", buy_id).execute()
                         logging.info(f"[{symbol}][{strategy_label}] ✅ BUY executat @ {avg_price}")
 
-                sell_price = round(avg_price * (1 + buy_discount), 6)
+                sell_price = adjust_price_to_tick(avg_price * (1 + buy_discount))
                 sell_id = place_limit_sell(client, symbol, amount, sell_price, strategy_label)
                 if not sell_id:
                     logging.warning(f"[{symbol}][{strategy_label}] ⚠️ Limit SELL failed — skipping cycle.")
