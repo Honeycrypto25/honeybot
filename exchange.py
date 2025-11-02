@@ -1,5 +1,7 @@
 from kucoin.client import Trade
 import time
+import random
+
 
 # =====================================================
 # 🔌 Inițializare client KuCoin
@@ -7,11 +9,7 @@ import time
 def init_client(api_key, api_secret, api_passphrase):
     """Creează conexiunea la KuCoin Trade API."""
     try:
-        client = Trade(
-            key=api_key,
-            secret=api_secret,
-            passphrase=api_passphrase
-        )
+        client = Trade(key=api_key, secret=api_secret, passphrase=api_passphrase)
         print("✅ KuCoin client initialized.")
         return client
     except Exception as e:
@@ -20,48 +18,82 @@ def init_client(api_key, api_secret, api_passphrase):
 
 
 # =====================================================
+# 🧱 Funcție generală de retry (stabilitate 24/7)
+# =====================================================
+def safe_order(action_func, *args, retries=3, delay=5, **kwargs):
+    """
+    Reîncearcă automat o acțiune (ex: create order) de până la 3x dacă apare eroare KuCoin / conexiune.
+    Returnează None dacă toate încercările eșuează.
+    """
+    for attempt in range(1, retries + 1):
+        try:
+            return action_func(*args, **kwargs)
+        except Exception as e:
+            print(f"⚠️ Eroare la încercarea {attempt}/{retries}: {e}")
+            if attempt < retries:
+                sleep_time = delay + random.uniform(0, 3)
+                print(f"⏳ Reîncerc în {round(sleep_time, 1)}s...")
+                time.sleep(sleep_time)
+            else:
+                print("❌ Toate încercările au eșuat.")
+                return None
+
+
+# =====================================================
 # 💰 Market SELL
 # =====================================================
-def market_sell(client, symbol, amount):
+def market_sell(client, symbol, amount, strategy_label="SELL_BUY"):
     """Plasează un ordin de vânzare MARKET."""
-    try:
+    def action():
         order = client.create_market_order(symbol, 'sell', size=str(amount))
-        order_id = order.get('orderId') or order.get('id')
-        print(f"[{symbol}] 🟠 Market SELL placed (orderId: {order_id})")
-        return order_id
-    except Exception as e:
-        print(f"[{symbol}] ❌ Eroare la plasarea ordinului MARKET SELL: {e}")
-        time.sleep(5)
-        raise
+        return order.get('orderId') or order.get('id')
+
+    order_id = safe_order(action)
+    if order_id:
+        print(f"[{symbol}][{strategy_label}] 🟠 Market SELL placed (orderId: {order_id})")
+    else:
+        print(f"[{symbol}][{strategy_label}] ❌ Market SELL failed after retries.")
+    return order_id
 
 
 # =====================================================
-# 🔍 Verificare status ordin (compatibil v1.0.26 și v2.x)
+# 💰 Market BUY
+# =====================================================
+def market_buy(client, symbol, amount, strategy_label="BUY_SELL"):
+    """Plasează un ordin de cumpărare MARKET."""
+    def action():
+        order = client.create_market_order(symbol, 'buy', size=str(amount))
+        return order.get('orderId') or order.get('id')
+
+    order_id = safe_order(action)
+    if order_id:
+        print(f"[{symbol}][{strategy_label}] 🟢 Market BUY placed (orderId: {order_id})")
+    else:
+        print(f"[{symbol}][{strategy_label}] ❌ Market BUY failed after retries.")
+    return order_id
+
+
+# =====================================================
+# 🔍 Verificare status ordin
 # =====================================================
 def check_order_executed(client, order_id):
-    """
-    Verifică dacă un ordin a fost complet executat.
-    Compatibil atât cu versiunile vechi cât și cu cele noi ale SDK-ului KuCoin.
-    """
+    """Verifică dacă un ordin a fost complet executat."""
     try:
-        # Compatibilitate automată între SDK-uri
         if hasattr(client, "get_order_details"):
-            status = client.get_order_details(order_id)   # vechi SDK (1.0.26)
+            status = client.get_order_details(order_id)
         else:
-            status = client.get_order(order_id)           # nou SDK (>=2.0)
+            status = client.get_order(order_id)
 
-        # Extragem datele utile
         filled = float(status.get('dealSize', 0))
         total = float(status.get('size', 0))
         deal_funds = float(status.get('dealFunds', 0))
-        state = status.get('status', '')  # poate fi: done, open, cancel
-
+        state = status.get('status', '')
         done = state == 'done' or filled >= total
         avg_price = (deal_funds / filled) if filled > 0 else 0
 
-        print(f"[{status.get('symbol', '')}] 🔎 check_order_executed → status={state}, filled={filled}/{total}, avg={avg_price}")
+        symbol = status.get('symbol', '')
+        print(f"[{symbol}] 🔎 check_order_executed → {state} {filled}/{total} avg={avg_price}")
         return done, avg_price
-
     except Exception as e:
         print(f"❌ Eroare la check_order_executed pentru {order_id}: {e}")
         time.sleep(5)
@@ -71,14 +103,32 @@ def check_order_executed(client, order_id):
 # =====================================================
 # 🟢 Limit BUY
 # =====================================================
-def place_limit_buy(client, symbol, amount, price):
+def place_limit_buy(client, symbol, amount, price, strategy_label="SELL_BUY"):
     """Plasează un ordin de cumpărare LIMIT."""
-    try:
+    def action():
         order = client.create_limit_order(symbol, 'buy', size=str(amount), price=str(price))
-        order_id = order.get('orderId') or order.get('id')
-        print(f"[{symbol}] 🟢 Limit BUY order created at {price} (orderId: {order_id})")
-        return order_id
-    except Exception as e:
-        print(f"[{symbol}] ❌ Eroare la plasarea ordinului LIMIT BUY: {e}")
-        time.sleep(5)
-        raise
+        return order.get('orderId') or order.get('id')
+
+    order_id = safe_order(action)
+    if order_id:
+        print(f"[{symbol}][{strategy_label}] 🟢 Limit BUY @ {price} (id: {order_id})")
+    else:
+        print(f"[{symbol}][{strategy_label}] ❌ Limit BUY failed after retries.")
+    return order_id
+
+
+# =====================================================
+# 🔴 Limit SELL
+# =====================================================
+def place_limit_sell(client, symbol, amount, price, strategy_label="BUY_SELL"):
+    """Plasează un ordin de vânzare LIMIT."""
+    def action():
+        order = client.create_limit_order(symbol, 'sell', size=str(amount), price=str(price))
+        return order.get('orderId') or order.get('id')
+
+    order_id = safe_order(action)
+    if order_id:
+        print(f"[{symbol}][{strategy_label}] 🔴 Limit SELL @ {price} (id: {order_id})")
+    else:
+        print(f"[{symbol}][{strategy_label}] ❌ Limit SELL failed after retries.")
+    return order_id

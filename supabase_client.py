@@ -52,7 +52,7 @@ def get_latest_settings():
 
 
 # =====================================================
-# 💾 Salvare ordine
+# 💾 Salvare ordine (cu strategie)
 # =====================================================
 def save_order(symbol, side, price, status, extra=None):
     """
@@ -69,6 +69,9 @@ def save_order(symbol, side, price, status, extra=None):
         "last_updated": datetime.now(timezone.utc).isoformat(),
     }
 
+    # 🧠 Adaugă strategia dacă este trimisă în extra
+    data["strategy"] = extra.get("strategy") if extra and "strategy" in extra else None
+
     # SELL → ciclu nou
     if side.upper() == "SELL":
         data["cycle_id"] = str(uuid.uuid4())
@@ -81,7 +84,10 @@ def save_order(symbol, side, price, status, extra=None):
         data.update(extra)
 
     supabase.table("orders").insert(data).execute()
-    print(f"[{symbol}] 💾 Saved {side} ({status}) | price={price} | cycle_id={data.get('cycle_id')}")
+    print(
+        f"[{symbol}] 💾 Saved {side} ({status}) | strategy={data.get('strategy')} | "
+        f"price={price} | cycle_id={data.get('cycle_id')}"
+    )
 
 
 # =====================================================
