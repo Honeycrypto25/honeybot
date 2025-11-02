@@ -34,13 +34,12 @@ formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
 console.setFormatter(formatter)
 logging.getLogger("").addHandler(console)
 
-logging.info("🚀 HONEYBOT Multi-Bot + Smart Cycle Recovery (dual strategy + live reload + staggered start) started...\n")
+logging.info("🚀 HONEYBOT Multi-Bot + Smart Cycle Recovery (dual strategy + live reload + staggered start + unique match) started...\n")
 
 # =====================================================
 # 🧠 Order Checker
 # =====================================================
 def update_order_status(order_id, new_status, avg_price=None, filled_size=None, cycle_id=None):
-    """Actualizează statusul ordinului și, dacă e complet executat, calculează profitul."""
     data = {
         "status": new_status,
         "last_updated": datetime.now(timezone.utc).isoformat(),
@@ -59,7 +58,6 @@ def update_order_status(order_id, new_status, avg_price=None, filled_size=None, 
 
 
 def check_old_orders(client, symbol, strategy_label):
-    """Verifică ultimele 5 ordine neexecutate (pending/open)."""
     result = (
         supabase.table("orders")
         .select("*")
@@ -92,7 +90,6 @@ def check_old_orders(client, symbol, strategy_label):
 
 
 def run_order_checker():
-    """Rulează verificarea automată a ordinelor o dată pe oră."""
     while True:
         try:
             bots = get_latest_settings()
@@ -116,9 +113,8 @@ def run_order_checker():
             logging.error(f"❌ Eroare în order_checker: {e}")
             time.sleep(60)
 
-
 # =====================================================
-# 🤖 Bot principal dual-strategy
+# 🤖 Bot principal (cu identificare unică symbol+strategy)
 # =====================================================
 def run_bot(settings):
     symbol = settings["symbol"]
@@ -136,10 +132,10 @@ def run_bot(settings):
 
     while True:
         try:
-            # ♻️ Reîncarcă toate setările active
+            # ♻️ Reîncarcă toate setările active și potrivește symbol + strategy
             bots = get_latest_settings()
             for bot in bots:
-                if bot["symbol"] == symbol:
+                if bot["symbol"] == symbol and bot.get("strategy", "").lower() == strategy.lower():
                     settings = bot
                     buy_discount = float(bot["buy_discount"])
                     cycle_delay = int(bot["cycle_delay"])
@@ -247,9 +243,8 @@ def run_bot(settings):
             logging.error(f"[{symbol}][{strategy_label}] ❌ Error: {e}")
             time.sleep(30)
 
-
 # =====================================================
-# 🚀 Start all bots (with 10s delay)
+# 🚀 Start all bots (10s staggered start)
 # =====================================================
 def start_all_bots():
     bots = get_latest_settings()
@@ -260,7 +255,7 @@ def start_all_bots():
     for i, settings in enumerate(bots):
         threading.Thread(target=run_bot, args=(settings,), daemon=True).start()
         logging.info(f"🕒 Delay 10s înainte de pornirea următorului bot ({i+1}/{len(bots)})...")
-        time.sleep(10)  # 🔸 10 secunde delay între porniri
+        time.sleep(10)
 
     threading.Thread(target=run_order_checker, daemon=True).start()
 
