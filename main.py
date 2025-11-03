@@ -34,15 +34,34 @@ formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
 console.setFormatter(formatter)
 logging.getLogger("").addHandler(console)
 
-logging.info("🚀 HONEYBOT Multi-Bot + Smart Cycle Recovery (dual strategy + live reload + staggered start + tick-size safe) started...\n")
+logging.info("🚀 HONEYBOT Multi-Bot + Smart Cycle Recovery (dual strategy + live reload + staggered start + tick-size safe + market-timeout) started...\n")
+
+# =====================================================
+# ⚙️ Constante
+# =====================================================
+MARKET_TIMEOUT_SECONDS = 600  # 10 minute max pentru așteptarea execuției MARKET
 
 # =====================================================
 # 🧮 Tick Size Adjust
 # =====================================================
 def adjust_price_to_tick(price, tick_size=0.00001):
     """Ajustează prețul la tick size-ul permis de exchange (KuCoin)."""
+    # rotunjire „round to nearest tick” + limitare la 5 zecimale pentru HONEY-USDT
     adjusted = round(round(price / tick_size) * tick_size, 5)
     return adjusted
+
+# =====================================================
+# 💾 Safe save wrapper
+# =====================================================
+def safe_save_order(symbol, side, price, status, meta):
+    try:
+        save_order(symbol, side, price, status, meta)
+        logging.info(
+            f"[{symbol}] 💾 Saved {side} ({status}) | strategy={meta.get('strategy')} | "
+            f"price={price} | cycle_id={meta.get('cycle_id')}"
+        )
+    except Exception as e:
+        logging.error(f"[{symbol}] ❌ save_order failed: {e}")
 
 # =====================================================
 # 🧠 Order Checker
@@ -118,7 +137,37 @@ def run_order_checker():
             time.sleep(60)
 
 # =====================================================
-# 🤖 Bot principal cu discount normalizat + tick-size
+# ⏱️ Helper: așteaptă execuția MARKET cu timeout
+# =====================================================
+def wait_market_execution(client, symbol, strategy_label, order_id, amount, check_delay, cycle_id, side_for_log):
+    start_ts = time.time()
+    executed, avg_price = False, 0
+    while not executed:
+        time.sleep(check_delay)
+        executed, avg_price = check_order_executed(client, order_id)
+        if executed:
+            supabase.table("orders").update(
+                {
+                    "status": "executed",
+                    "price": avg_price,
+                    "filled_size": amount,
+                    "last_updated": datetime.now(timezone.utc).isoformat(),
+                }
+            ).eq("order_id", order_id).execute()
+            logging.info(f"[{symbol}][{strategy_label}] ✅ {side_for_log} executat @ {avg_price}")
+            return True, avg_price
+
+        if time.time() - start_ts > MARKET_TIMEOUT_SECONDS:
+            logging.warning(
+                f"[{symbol}][{strategy_label}] ⏰ Timeout MARKET ({side_for_log}) după {MARKET_TIMEOUT_SECONDS}s "
+                f"— las {side_for_log} ca 'pending' și trec peste ciclul curent."
+            )
+            # status rămâne pending; nu avem preț mediu => nu putem continua ciclul în siguranță
+            return False, 0
+    return False, 0  # fallback
+
+# =====================================================
+# 🤖 Bot principal cu discount normalizat + tick-size + timeout MARKET
 # =====================================================
 def run_bot(settings):
     symbol = settings["symbol"]
@@ -132,11 +181,13 @@ def run_bot(settings):
     strategy = settings.get("strategy", "sell_buy")
     strategy_label = strategy.upper()
 
-    # normalizează discount (dacă e introdus 5 în loc de 0.05)
+    # normalizează discount (acceptă 5 sau 0.05)
     if buy_discount > 1:
-        buy_discount = buy_discount / 100
+        buy_discount = buy_discount / 100.0
 
-    logging.info(f"[{symbol}][{strategy_label}] ⚙️ Started bot | amount={amount}, discount={buy_discount*100:.2f}%, cycle={cycle_delay/3600}h")
+    logging.info(
+        f"[{symbol}][{strategy_label}] ⚙️ Started bot | amount={amount}, discount={buy_discount*100:.2f}%, cycle={cycle_delay/3600}h"
+    )
 
     while True:
         try:
@@ -147,7 +198,7 @@ def run_bot(settings):
                     settings = bot
                     buy_discount = float(bot["buy_discount"])
                     if buy_discount > 1:
-                        buy_discount = buy_discount / 100
+                        buy_discount = buy_discount / 100.0
                     cycle_delay = int(bot["cycle_delay"])
                     strategy = bot.get("strategy", strategy)
                     strategy_label = strategy.upper()
@@ -167,22 +218,17 @@ def run_bot(settings):
                     time.sleep(cycle_delay)
                     continue
 
-                save_order(symbol, "SELL", 0, "pending", {
-                    "order_id": sell_id,
-                    "cycle_id": cycle_id,
-                    "strategy": strategy_label
-                })
+                safe_save_order(
+                    symbol, "SELL", 0, "pending",
+                    {"order_id": sell_id, "cycle_id": cycle_id, "strategy": strategy_label}
+                )
 
-                executed, avg_price = False, 0
-                while not executed:
-                    time.sleep(check_delay)
-                    executed, avg_price = check_order_executed(client, sell_id)
-                    if executed:
-                        supabase.table("orders").update(
-                            {"status": "executed", "price": avg_price, "filled_size": amount,
-                             "last_updated": datetime.now(timezone.utc).isoformat()}
-                        ).eq("order_id", sell_id).execute()
-                        logging.info(f"[{symbol}][{strategy_label}] ✅ SELL executat @ {avg_price}")
+                ok, avg_price = wait_market_execution(
+                    client, symbol, strategy_label, sell_id, amount, check_delay, cycle_id, "SELL"
+                )
+                if not ok or avg_price <= 0:
+                    time.sleep(cycle_delay)
+                    continue
 
                 buy_price = adjust_price_to_tick(avg_price * (1 - buy_discount))
                 buy_id = place_limit_buy(client, symbol, amount, buy_price, strategy_label)
@@ -191,12 +237,13 @@ def run_bot(settings):
                     time.sleep(cycle_delay)
                     continue
 
-                save_order(symbol, "BUY", buy_price, "open", {
-                    "order_id": buy_id,
-                    "cycle_id": cycle_id,
-                    "strategy": strategy_label
-                })
-                logging.info(f"[{symbol}][{strategy_label}] 🟢 BUY limit placed @ {buy_price} (−{buy_discount*100:.2f}%)")
+                safe_save_order(
+                    symbol, "BUY", buy_price, "open",
+                    {"order_id": buy_id, "cycle_id": cycle_id, "strategy": strategy_label}
+                )
+                logging.info(
+                    f"[{symbol}][{strategy_label}] 🟢 BUY limit placed @ {buy_price} (−{buy_discount*100:.2f}%)"
+                )
 
             # =====================================================
             # BUY → SELL
@@ -208,22 +255,17 @@ def run_bot(settings):
                     time.sleep(cycle_delay)
                     continue
 
-                save_order(symbol, "BUY", 0, "pending", {
-                    "order_id": buy_id,
-                    "cycle_id": cycle_id,
-                    "strategy": strategy_label
-                })
+                safe_save_order(
+                    symbol, "BUY", 0, "pending",
+                    {"order_id": buy_id, "cycle_id": cycle_id, "strategy": strategy_label}
+                )
 
-                executed, avg_price = False, 0
-                while not executed:
-                    time.sleep(check_delay)
-                    executed, avg_price = check_order_executed(client, buy_id)
-                    if executed:
-                        supabase.table("orders").update(
-                            {"status": "executed", "price": avg_price, "filled_size": amount,
-                             "last_updated": datetime.now(timezone.utc).isoformat()}
-                        ).eq("order_id", buy_id).execute()
-                        logging.info(f"[{symbol}][{strategy_label}] ✅ BUY executat @ {avg_price}")
+                ok, avg_price = wait_market_execution(
+                    client, symbol, strategy_label, buy_id, amount, check_delay, cycle_id, "BUY"
+                )
+                if not ok or avg_price <= 0:
+                    time.sleep(cycle_delay)
+                    continue
 
                 sell_price = adjust_price_to_tick(avg_price * (1 + buy_discount))
                 sell_id = place_limit_sell(client, symbol, amount, sell_price, strategy_label)
@@ -232,12 +274,13 @@ def run_bot(settings):
                     time.sleep(cycle_delay)
                     continue
 
-                save_order(symbol, "SELL", sell_price, "open", {
-                    "order_id": sell_id,
-                    "cycle_id": cycle_id,
-                    "strategy": strategy_label
-                })
-                logging.info(f"[{symbol}][{strategy_label}] 🔴 SELL limit placed @ {sell_price} (+{buy_discount*100:.2f}%)")
+                safe_save_order(
+                    symbol, "SELL", sell_price, "open",
+                    {"order_id": sell_id, "cycle_id": cycle_id, "strategy": strategy_label}
+                )
+                logging.info(
+                    f"[{symbol}][{strategy_label}] 🔴 SELL limit placed @ {sell_price} (+{buy_discount*100:.2f}%)"
+                )
 
             logging.info(f"[{symbol}][{strategy_label}] ⏳ Aștept următorul ciclu ({cycle_delay/3600}h)...\n")
             time.sleep(cycle_delay)
