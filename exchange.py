@@ -2,7 +2,6 @@ from kucoin.client import Trade
 import time
 import random
 
-
 # =====================================================
 # 🔌 Inițializare client KuCoin
 # =====================================================
@@ -16,15 +15,11 @@ def init_client(api_key, api_secret, api_passphrase):
         print(f"❌ Eroare la inițializarea clientului KuCoin: {e}")
         raise
 
-
 # =====================================================
 # 🧱 Funcție generală de retry (stabilitate 24/7)
 # =====================================================
 def safe_order(action_func, *args, retries=3, delay=5, **kwargs):
-    """
-    Reîncearcă automat o acțiune (ex: create order) de până la 3x dacă apare eroare KuCoin / conexiune.
-    Returnează None dacă toate încercările eșuează.
-    """
+    """Reîncearcă o acțiune KuCoin până la 3 ori dacă apare eroare temporară."""
     for attempt in range(1, retries + 1):
         try:
             return action_func(*args, **kwargs)
@@ -38,11 +33,10 @@ def safe_order(action_func, *args, retries=3, delay=5, **kwargs):
                 print("❌ Toate încercările au eșuat.")
                 return None
 
-
 # =====================================================
-# 💰 Market SELL
+# 💰 Market SELL (prima acțiune din strategia STB)
 # =====================================================
-def market_sell(client, symbol, amount, strategy_label="SELL_BUY"):
+def market_sell(client, symbol, amount, strategy_label="STB"):
     """Plasează un ordin de vânzare MARKET."""
     def action():
         order = client.create_market_order(symbol, 'sell', size=str(amount))
@@ -54,24 +48,6 @@ def market_sell(client, symbol, amount, strategy_label="SELL_BUY"):
     else:
         print(f"[{symbol}][{strategy_label}] ❌ Market SELL failed after retries.")
     return order_id
-
-
-# =====================================================
-# 💰 Market BUY
-# =====================================================
-def market_buy(client, symbol, amount, strategy_label="BUY_SELL"):
-    """Plasează un ordin de cumpărare MARKET."""
-    def action():
-        order = client.create_market_order(symbol, 'buy', size=str(amount))
-        return order.get('orderId') or order.get('id')
-
-    order_id = safe_order(action)
-    if order_id:
-        print(f"[{symbol}][{strategy_label}] 🟢 Market BUY placed (orderId: {order_id})")
-    else:
-        print(f"[{symbol}][{strategy_label}] ❌ Market BUY failed after retries.")
-    return order_id
-
 
 # =====================================================
 # 🔍 Verificare status ordin
@@ -99,11 +75,10 @@ def check_order_executed(client, order_id):
         time.sleep(5)
         return False, 0
 
-
 # =====================================================
-# 🟢 Limit BUY
+# 🟢 Limit BUY (a doua acțiune din strategia STB)
 # =====================================================
-def place_limit_buy(client, symbol, amount, price, strategy_label="SELL_BUY"):
+def place_limit_buy(client, symbol, amount, price, strategy_label="STB"):
     """Plasează un ordin de cumpărare LIMIT."""
     def action():
         order = client.create_limit_order(symbol, 'buy', size=str(amount), price=str(price))
@@ -114,21 +89,4 @@ def place_limit_buy(client, symbol, amount, price, strategy_label="SELL_BUY"):
         print(f"[{symbol}][{strategy_label}] 🟢 Limit BUY @ {price} (id: {order_id})")
     else:
         print(f"[{symbol}][{strategy_label}] ❌ Limit BUY failed after retries.")
-    return order_id
-
-
-# =====================================================
-# 🔴 Limit SELL
-# =====================================================
-def place_limit_sell(client, symbol, amount, price, strategy_label="BUY_SELL"):
-    """Plasează un ordin de vânzare LIMIT."""
-    def action():
-        order = client.create_limit_order(symbol, 'sell', size=str(amount), price=str(price))
-        return order.get('orderId') or order.get('id')
-
-    order_id = safe_order(action)
-    if order_id:
-        print(f"[{symbol}][{strategy_label}] 🔴 Limit SELL @ {price} (id: {order_id})")
-    else:
-        print(f"[{symbol}][{strategy_label}] ❌ Limit SELL failed after retries.")
     return order_id

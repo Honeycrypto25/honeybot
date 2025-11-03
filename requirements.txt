@@ -14,3 +14,5 @@ idna==3.10
 # ---- Compatibility (Railway/Linux Runtime) ----
 cryptography==43.0.1
 httpx==0.27.2
+# ---- Process control ----
+psutil==6.0.0
