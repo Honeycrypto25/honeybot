@@ -62,9 +62,7 @@ def save_order(symbol, side, price, status, extra=None):
         data.update(extra)
 
     supabase.table("orders").insert(data).execute()
-    print(
-        f"[{symbol}] 💾 Saved {side} ({status}) | price={price} | cycle_id={data.get('cycle_id')}"
-    )
+    print(f"[{symbol}] 💾 Saved {side} ({status}) | price={price} | cycle_id={data.get('cycle_id')}")
 
 # =====================================================
 # 💰 Profit per cycle (SELL → BUY)
@@ -74,7 +72,7 @@ def update_execution_time_and_profit(cycle_id):
     try:
         result = (
             supabase.table("orders")
-            .select("side, price, created_at, last_updated, symbol, filled_size")
+            .select("side, price, created_at, last_updated, symbol, filled_size, strategy")
             .eq("cycle_id", cycle_id)
             .execute()
         )
@@ -85,6 +83,7 @@ def update_execution_time_and_profit(cycle_id):
 
         symbol = None
         sell_price = buy_price = sell_time = buy_time = filled_size = None
+        strategy = "SELL_BUY"
 
         for o in orders:
             symbol = o["symbol"]
@@ -108,10 +107,10 @@ def update_execution_time_and_profit(cycle_id):
             print(f"⚠️ Missing price data for {cycle_id}")
             return
 
-        # ✅ Profit doar în USDT (pentru strategia SELL → BUY)
-        profit_percent = round(((sell_price - buy_price) / buy_price) * 100, 2)
-        profit_usdt = round((sell_price - buy_price) * filled_size, 6)
-        profit_coin = None  # nu se calculează pentru STB
+        # ✅ Profit calculat pentru strategia SELL_BUY
+        profit_percent = round(((sell_price - buy_price) / sell_price) * 100, 2)
+        profit_coin = round((profit_percent / 100) * filled_size, 6)
+        profit_usdt = round((profit_percent / 100) * filled_size * sell_price, 6)
 
         # ⏱️ Durata execuției
         execution_time = abs(buy_time - sell_time) if (sell_time and buy_time) else None
@@ -120,17 +119,17 @@ def update_execution_time_and_profit(cycle_id):
         supabase.table("profit_per_cycle").upsert({
             "cycle_id": cycle_id,
             "symbol": symbol,
-            "strategy": "SELL_BUY",
+            "strategy": strategy,
             "sell_price": sell_price,
             "buy_price": buy_price,
             "profit_percent": profit_percent,
-            "profit_usdt": profit_usdt,
             "profit_coin": profit_coin,
+            "profit_usdt": profit_usdt,
             "execution_time": str(execution_time) if execution_time else None,
             "last_updated": datetime.now(timezone.utc).isoformat(),
         }).execute()
 
-        print(f"💰 [{symbol}] Profit updated: {profit_percent}% → USDT={profit_usdt}")
+        print(f"💰 [{symbol}] Profit updated: {profit_percent}% | COIN={profit_coin} | USDT={profit_usdt}")
 
     except Exception as e:
         print(f"❌ Error updating profit for {cycle_id}: {e}")
