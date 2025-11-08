@@ -34,7 +34,7 @@ def safe_order(action_func, *args, retries=3, delay=5, **kwargs):
                 return None
 
 # =====================================================
-# 💰 Market SELL (prima acțiune din strategia STB)
+# 🔴 Market SELL (prima acțiune din strategia STB)
 # =====================================================
 def market_sell(client, symbol, amount, strategy_label="STB"):
     """Plasează un ordin de vânzare MARKET."""
@@ -44,7 +44,7 @@ def market_sell(client, symbol, amount, strategy_label="STB"):
 
     order_id = safe_order(action)
     if order_id:
-        print(f"[{symbol}][{strategy_label}] 🟠 Market SELL placed (orderId: {order_id})")
+        print(f"[{symbol}][{strategy_label}] 🔴 Market SELL placed (orderId: {order_id})")
     else:
         print(f"[{symbol}][{strategy_label}] ❌ Market SELL failed after retries.")
     return order_id

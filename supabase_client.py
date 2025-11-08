@@ -22,9 +22,8 @@ supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 print(f"✅ Connected to Supabase project: {SUPABASE_URL.split('//')[1].split('.')[0]}")
 
 # =====================================================
-# 📘 FUNCTIONS
+# 📘 SETTINGS
 # =====================================================
-
 def get_latest_settings():
     """Returnează toate setările active din 'settings'."""
     try:
@@ -37,7 +36,7 @@ def get_latest_settings():
         return []
 
 # =====================================================
-# 💾 Salvare ordine (doar strategia STB)
+# 💾 Salvare ordine (strategie SELL → BUY)
 # =====================================================
 def save_order(symbol, side, price, status, extra=None):
     """Salvează un ordin în tabelul 'orders' pentru strategia SELL → BUY."""
@@ -109,11 +108,12 @@ def update_execution_time_and_profit(cycle_id):
             print(f"⚠️ Missing price data for {cycle_id}")
             return
 
-        # Profit în USDT
+        # ✅ Profit doar în USDT (pentru strategia SELL → BUY)
         profit_percent = round(((sell_price - buy_price) / buy_price) * 100, 2)
         profit_usdt = round((sell_price - buy_price) * filled_size, 6)
+        profit_coin = None  # nu se calculează pentru STB
 
-        # Durata execuției
+        # ⏱️ Durata execuției
         execution_time = abs(buy_time - sell_time) if (sell_time and buy_time) else None
 
         # 🧾 Salvare / actualizare în profit_per_cycle
@@ -125,6 +125,7 @@ def update_execution_time_and_profit(cycle_id):
             "buy_price": buy_price,
             "profit_percent": profit_percent,
             "profit_usdt": profit_usdt,
+            "profit_coin": profit_coin,
             "execution_time": str(execution_time) if execution_time else None,
             "last_updated": datetime.now(timezone.utc).isoformat(),
         }).execute()
